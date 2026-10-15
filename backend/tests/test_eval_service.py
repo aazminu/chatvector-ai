@@ -9,9 +9,10 @@ import pytest
 from core.config import config
 from db.base import ChunkMatch
 from services import eval_metrics
+from cli import cmd_eval
 from services.eval_config import EffectiveRetrievalConfig
-from services.eval_fixtures import load_dataset
-from services.eval_service import diff_arms, run_eval
+from services.eval_fixtures import EvalDataset, load_dataset
+from services.eval_service import EvalRunResult, diff_arms, run_eval
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "eval"
 
@@ -76,7 +77,7 @@ def test_chunk_match_key_falls_back_to_document_id():
 async def test_run_eval_single_arm_reports_sane_metrics():
     dataset = load_dataset(FIXTURES_DIR / "basic_queries.json")
 
-    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None):
+    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None, hybrid_enabled=None):
         # One correct hit plus filler, regardless of arm config.
         return [_chunk(doc_id, 0), _chunk(doc_id, 1), _chunk(doc_id, 2)]
 
@@ -86,8 +87,8 @@ async def test_run_eval_single_arm_reports_sane_metrics():
         enable_reranking=False,
     )
 
-    with patch("services.eval_config.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
-         patch("services.eval_service.get_embedding", AsyncMock(return_value=[0.1, 0.2, 0.3])):
+    with patch("services.chat_service.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
+         patch("services.chat_service.get_embeddings", AsyncMock(side_effect=lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts])):
         result = await run_eval(dataset, [arm], tenant_id="tenant-eval-test")
 
     assert len(result.arms) == 1
@@ -110,11 +111,9 @@ async def test_run_eval_single_arm_reports_sane_metrics():
 async def test_compare_mode_arms_produce_different_candidates():
     dataset = load_dataset(FIXTURES_DIR / "diverging_queries.json")
 
-    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None):
-        # Read the live override so vector-only vs hybrid arms diverge —
-        # this simulates SQLAlchemyService branching on HYBRID_RETRIEVAL_ENABLED
-        # without requiring a live Postgres/pgvector instance for this test.
-        if config.HYBRID_RETRIEVAL_ENABLED:
+    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None, hybrid_enabled=None):
+        # Branch on the request-scoped flag, not the process global.
+        if hybrid_enabled:
             return [_chunk(doc_id, 9, score=0.9), _chunk(doc_id, 1, score=0.7)]
         return [_chunk(doc_id, 2, score=0.8), _chunk(doc_id, 3, score=0.6)]
 
@@ -125,8 +124,8 @@ async def test_compare_mode_arms_produce_different_candidates():
         label="hybrid", hybrid_retrieval_enabled=True, enable_reranking=False
     )
 
-    with patch("services.eval_config.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
-         patch("services.eval_service.get_embedding", AsyncMock(return_value=[0.1, 0.2, 0.3])):
+    with patch("services.chat_service.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
+         patch("services.chat_service.get_embeddings", AsyncMock(side_effect=lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts])):
         result = await run_eval(dataset, [vector_only, hybrid], tenant_id="tenant-eval-test")
 
     diffs = diff_arms(result.arms)
@@ -146,7 +145,7 @@ async def test_compare_mode_arms_produce_different_candidates():
 async def test_export_writes_expected_schema(tmp_path):
     dataset = load_dataset(FIXTURES_DIR / "basic_queries.json")
 
-    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None):
+    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None, hybrid_enabled=None):
         return [_chunk(doc_id, 0)]
 
     arm = EffectiveRetrievalConfig(
@@ -154,8 +153,8 @@ async def test_export_writes_expected_schema(tmp_path):
     )
     export_path = tmp_path / "run.json"
 
-    with patch("services.eval_config.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
-         patch("services.eval_service.get_embedding", AsyncMock(return_value=[0.1, 0.2, 0.3])):
+    with patch("services.chat_service.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
+         patch("services.chat_service.get_embeddings", AsyncMock(side_effect=lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts])):
         await run_eval(dataset, [arm], tenant_id="tenant-eval-test", export_path=export_path)
 
     payload = json.loads(export_path.read_text(encoding="utf-8"))
@@ -180,15 +179,15 @@ async def test_export_writes_expected_schema(tmp_path):
 async def test_eval_never_calls_answer_generation():
     dataset = load_dataset(FIXTURES_DIR / "basic_queries.json")
 
-    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None):
+    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None, hybrid_enabled=None):
         return [_chunk(doc_id, 0)]
 
     arm = EffectiveRetrievalConfig(
         label="current-config", hybrid_retrieval_enabled=False, enable_reranking=False
     )
 
-    with patch("services.eval_config.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
-         patch("services.eval_service.get_embedding", AsyncMock(return_value=[0.1, 0.2, 0.3])), \
+    with patch("services.chat_service.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
+         patch("services.chat_service.get_embeddings", AsyncMock(side_effect=lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts])), \
          patch("services.answer_service.generate_answer", AsyncMock(side_effect=AssertionError("must not be called"))) as gen, \
          patch("services.answer_service.generate_answer_stream", AsyncMock(side_effect=AssertionError("must not be called"))) as gen_stream:
         await run_eval(dataset, [arm], tenant_id="tenant-eval-test")
@@ -206,7 +205,7 @@ async def test_eval_never_calls_answer_generation():
 async def test_config_overrides_restored_after_run():
     dataset = load_dataset(FIXTURES_DIR / "basic_queries.json")
 
-    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None):
+    async def fake_find_similar_chunks(*, doc_id, query_embedding, match_count, tenant_id, query_text=None, session_id=None, hybrid_enabled=None):
         return [_chunk(doc_id, 0)]
 
     original_hybrid = config.HYBRID_RETRIEVAL_ENABLED
@@ -218,9 +217,74 @@ async def test_config_overrides_restored_after_run():
         enable_reranking=not original_rerank,
     )
 
-    with patch("services.eval_config.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
-         patch("services.eval_service.get_embedding", AsyncMock(return_value=[0.1, 0.2, 0.3])):
+    with patch("services.chat_service.find_similar_chunks", AsyncMock(side_effect=fake_find_similar_chunks)), \
+         patch("services.chat_service.get_embeddings", AsyncMock(side_effect=lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts])):
         await run_eval(dataset, [arm], tenant_id="tenant-eval-test")
 
     assert config.HYBRID_RETRIEVAL_ENABLED == original_hybrid
     assert config.ENABLE_RERANKING == original_rerank
+
+
+def _empty_eval_result() -> EvalRunResult:
+    return EvalRunResult(
+        run_id="run",
+        timestamp="t",
+        tool_version="v",
+        dataset_name="d",
+        dataset_hash="h",
+        arms=[],
+    )
+
+
+async def _load_eval_arm(tmp_path, raw: dict):
+    arm_file = tmp_path / "arm.json"
+    arm_file.write_text(json.dumps(raw))
+    captured: dict = {}
+
+    async def fake_run(dataset, arms, **kwargs):
+        del dataset, kwargs
+        captured["arms"] = arms
+        return _empty_eval_result()
+
+    with (
+        patch("services.eval_fixtures.load_dataset", return_value=EvalDataset(name="d", queries=[])),
+        patch("services.eval_service.run_eval", new=fake_run),
+    ):
+        await cmd_eval(str(tmp_path / "dataset.json"), "dev", [5], [str(arm_file)], 5, None, False)
+    return captured["arms"][0]
+
+
+@pytest.mark.asyncio
+async def test_eval_arm_new_keys_do_not_require_legacy_names(tmp_path):
+    arm = await _load_eval_arm(
+        tmp_path,
+        {"label": "new-keys", "hybrid_enabled": True, "reranking_enabled": False},
+    )
+    assert arm.label == "new-keys"
+    assert arm.hybrid_retrieval_enabled is True
+    assert arm.enable_reranking is False
+
+
+@pytest.mark.asyncio
+async def test_eval_arm_legacy_keys_still_load(tmp_path):
+    arm = await _load_eval_arm(
+        tmp_path,
+        {"hybrid_retrieval_enabled": False, "enable_reranking": True},
+    )
+    assert arm.hybrid_retrieval_enabled is False
+    assert arm.enable_reranking is True
+
+
+@pytest.mark.asyncio
+async def test_eval_arm_new_keys_win_when_both_names_are_present(tmp_path):
+    arm = await _load_eval_arm(
+        tmp_path,
+        {
+            "hybrid_enabled": True,
+            "hybrid_retrieval_enabled": False,
+            "reranking_enabled": False,
+            "enable_reranking": True,
+        },
+    )
+    assert arm.hybrid_retrieval_enabled is True
+    assert arm.enable_reranking is False
