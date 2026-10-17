@@ -3,13 +3,22 @@ import {
   ChatVectorTimeoutError,
   isChatVectorError,
 } from "../errors.js";
+import {
+  runBulkUploads,
+  type UploadManyItem,
+  type UploadManyWorkerOptions,
+} from "../internal/bulk-upload.js";
+import { collectDirectoryUploadPaths } from "../internal/directory-upload.js";
 import type {
+  BulkUploadSummary,
   DocumentListResponse,
   DocumentResponse,
   DocumentStatus,
   DocumentSummary,
   RequestOptions,
+  UploadDirectoryOptions,
   UploadInput,
+  UploadManyOptions,
   WaitForReadyOptions,
 } from "../models.js";
 import { iterDocumentStatusEvents } from "../internal/sse.js";
@@ -73,6 +82,44 @@ export class DocumentsResource {
       ...signalOption(options.signal),
     });
     return mapDocumentResponse(payload);
+  }
+
+  async uploadMany(
+    items: readonly UploadManyItem[],
+    options: UploadManyOptions = {},
+  ): Promise<BulkUploadSummary> {
+    throwIfAborted(options.signal);
+    const sessionId = options.sessionId?.trim();
+    return runBulkUploads(
+      items,
+      async (input, signal) => {
+        const withSession =
+          sessionId === undefined || sessionId === ""
+            ? input
+            : { ...input, sessionId };
+        return this.uploadDocument(withSession, signalOption(signal));
+      },
+      async (documentId, signal, timeoutMs, pollIntervalMs) => {
+        await this.waitForReady(documentId, {
+          ...signalOption(signal),
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+          ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
+        });
+      },
+      buildUploadManyWorkerOptions(options),
+    );
+  }
+
+  async uploadDirectory(
+    directoryPath: string,
+    options: UploadDirectoryOptions = {},
+  ): Promise<BulkUploadSummary> {
+    throwIfAborted(options.signal);
+    const paths = await collectDirectoryUploadPaths(directoryPath, {
+      ...(options.pattern === undefined ? {} : { pattern: options.pattern }),
+      ...(options.recursive === undefined ? {} : { recursive: options.recursive }),
+    });
+    return this.uploadMany(paths, options);
   }
 
   async listDocuments(
@@ -257,6 +304,37 @@ function waitTimeoutError(
     `Timed out after ${timeoutMs}ms while waiting for document '${documentId}'.`,
     options,
   );
+}
+
+function buildUploadManyWorkerOptions(
+  options: UploadManyOptions,
+): UploadManyWorkerOptions {
+  return {
+    ...(options.concurrency === undefined
+      ? {}
+      : { concurrency: options.concurrency }),
+    ...(options.failFast === undefined ? {} : { failFast: options.failFast }),
+    ...(options.retryOnRateLimit === undefined
+      ? {}
+      : { retryOnRateLimit: options.retryOnRateLimit }),
+    ...(options.maxRateLimitRetries === undefined
+      ? {}
+      : { maxRateLimitRetries: options.maxRateLimitRetries }),
+    ...(options.idempotencyKeyForPath === undefined
+      ? {}
+      : { idempotencyKeyForPath: options.idempotencyKeyForPath }),
+    ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+    ...(options.waitForReady === undefined
+      ? {}
+      : { waitForReady: options.waitForReady }),
+    ...(options.waitForReadyTimeoutMs === undefined
+      ? {}
+      : { waitForReadyTimeoutMs: options.waitForReadyTimeoutMs }),
+    ...(options.waitForReadyPollIntervalMs === undefined
+      ? {}
+      : { waitForReadyPollIntervalMs: options.waitForReadyPollIntervalMs }),
+    ...signalOption(options.signal),
+  };
 }
 
 function uploadSessionHeaders(
