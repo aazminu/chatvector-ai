@@ -171,6 +171,23 @@ Validate the full authenticated upload → ingest → chat path locally:
 ./scripts/prod-e2e-smoke.sh
 ```
 
+### Horizontal API topology smoke
+
+Automated coverage (must stay green — this is the two-replica reconciler
+assertion, not documentation-only):
+
+```bash
+pytest backend/tests/test_stale_reconciliation.py backend/tests/test_tenant_registry.py -v --tb=short
+```
+
+Manual checklist when running two API processes (same Redis, Postgres, and S3):
+
+1. Set `MULTI_API_INSTANCE=true`, `QUEUE_BACKEND=redis`, `ARTIFACT_STORAGE=s3` (plus bucket credentials).
+2. Start the normal stack on port 8000, then a second API process/container on a **different** host port (for example `8001:8000`) with the same `DATABASE_URL` / `REDIS_URL`. Do not `docker compose up --scale api=2` while `8000:8000` is published — both replicas would bind the same host port.
+3. Confirm only one replica logs that it marked stale documents; the other logs that it skipped reconciliation.
+4. Upload a document; `GET /documents/{id}/status` succeeds against either replica.
+5. Tenant-scope `POST /chat` returns the new document (registry bypass is DB-authoritative).
+
 ---
 
 ## 6. Post-deploy verification
@@ -193,7 +210,9 @@ Validate the full authenticated upload → ingest → chat path locally:
 | **No API key bootstrap** | No tenant can authenticate | Run `create-tenant-key` once per environment |
 | **Redis unreachable** | Upload/queue failures; `/status` may show queue metrics unavailable | Verify `REDIS_URL` and Redis health |
 | **`QUEUE_BACKEND=memory` in prod** | Startup validation fails | Set `QUEUE_BACKEND=redis` when `APP_ENV=production` |
-| **Multiple API workers/containers** | Unsupported in Phase 3; stale-doc reconciliation and tenant registry break | Run `--workers 1` and one API container |
+| **Multiple API workers/containers without `MULTI_API_INSTANCE`** | Process-local tenant cache and duplicate stale reconciliation | Set `MULTI_API_INSTANCE=true`, `QUEUE_BACKEND=redis`, `ARTIFACT_STORAGE=s3`; keep `uvicorn --workers 1` per container |
+| **`MULTI_API_INSTANCE` with local spill** | Workers on other hosts cannot read upload bytes | Use `ARTIFACT_STORAGE=s3` (required when `MULTI_API_INSTANCE=true`) |
+| **`--scale api=2` with `8000:8000`** | Second replica fails to bind the host port | Publish a second host port or put a load balancer in front |
 | **pgvector not enabled** | Embedding storage fails | Enable extension on Postgres host |
 | **Expecting `/docs` in prod** | Swagger appears disabled | Use OpenAPI from a dev instance or export schema separately |
 | **Embedding provider switch without re-index** | Dimension mismatch errors | Fresh DB or re-embed after changing embedding models |
