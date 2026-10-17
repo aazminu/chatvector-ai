@@ -6,6 +6,11 @@ SCORE_TYPE_VECTOR = "vector"
 SCORE_TYPE_HYBRID_RRF = "hybrid_rrf"
 SCORE_TYPE_RERANKED = "reranked"
 
+# documents.status_detail values for staged replacement (migration 014). They are
+# retrieval-neutral: only ``documents.status == "completed"`` gates retrieval.
+REPLACEMENT_IN_PROGRESS = "replacement_in_progress"
+REPLACEMENT_FAILED = "replacement_failed"
+
 # Abstract base class that defines WHAT database operations we need.
 # All DB service implementations must satisfy this interface.
 
@@ -125,6 +130,47 @@ class DatabaseService(ABC):
     @abstractmethod
     async def get_document_status(self, doc_id: str, tenant_id: str) -> Optional[dict]:
         """Get document upload status payload for a tenant-owned document."""
+        pass
+
+    @abstractmethod
+    async def begin_document_replacement(self, doc_id: str, tenant_id: str) -> str:
+        """Atomically claim a tenant-owned document for replacement.
+
+        Returns ``"started"`` (``status_detail`` is now ``replacement_in_progress``;
+        ``status`` and active chunks are untouched), ``"in_progress"`` when a
+        replacement is already running, ``"not_eligible"`` when the document is
+        not ``completed``/``failed``, or ``"not_found"``.
+        """
+        pass
+
+    @abstractmethod
+    async def set_document_status_detail(
+        self,
+        doc_id: str,
+        status_detail: Optional[str],
+        tenant_id: str,
+        *,
+        error: Optional[dict] = None,
+    ) -> None:
+        """Set ``status_detail`` and ``error`` without changing ``status`` or chunks."""
+        pass
+
+    @abstractmethod
+    async def replace_document_content(
+        self,
+        doc_id: str,
+        chunk_records: list[ChunkRecord],
+        tenant_id: str,
+        *,
+        file_name: str,
+        metadata: Optional[dict] = None,
+    ) -> list[str]:
+        """Swap a document's active chunk set for ``chunk_records`` in one transaction.
+
+        Also marks the document ``completed``, clears ``status_detail``/``error``,
+        and updates ``file_name`` (and ``metadata`` when not ``None``). Readers see
+        either the entire old chunk set or the entire new one, never a mix.
+        """
         pass
 
     @abstractmethod
