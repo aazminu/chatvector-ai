@@ -13,6 +13,10 @@ import type {
 } from "../models.js";
 import { HttpClient } from "../internal/http.js";
 import {
+  applyRequestConfigFields,
+  validateMatchCount,
+} from "../internal/request-config.js";
+import {
   assertRequiredString,
   isRecord,
   signalOption,
@@ -32,12 +36,16 @@ export class ChatsResource {
       question: request.question,
       doc_id: request.docId,
     };
-    addOptional(body, "match_count", request.matchCount);
+    if (request.matchCount !== undefined) {
+      validateMatchCount(request.matchCount);
+      body.match_count = request.matchCount;
+    }
     addOptional(body, "session_id", request.sessionId);
     addOptional(body, "scope", request.scope);
     if (request.debugRetrieval === true) {
       body.debug_retrieval = true;
     }
+    applyRequestConfigFields(body, request.retrieval, request.history);
 
     const payload = await this.http.requestJson("POST", "/chat", {
       json: body,
@@ -63,6 +71,7 @@ export class ChatsResource {
     if (request.debugRetrieval === true) {
       body.debug_retrieval = true;
     }
+    applyRequestConfigFields(body, request.retrieval, request.history);
 
     const payload = await this.http.requestJson("POST", "/chat/batch", {
       json: body,
@@ -88,12 +97,16 @@ export class ChatsResource {
       question: request.question,
       doc_id: request.docId,
     };
-    addOptional(body, "match_count", request.matchCount);
+    if (request.matchCount !== undefined) {
+      validateMatchCount(request.matchCount);
+      body.match_count = request.matchCount;
+    }
     addOptional(body, "session_id", request.sessionId);
     addOptional(body, "scope", request.scope);
     if (request.debugRetrieval === true) {
       body.debug_retrieval = true;
     }
+    applyRequestConfigFields(body, request.retrieval, request.history);
 
     const response = await this.http.openStream("POST", "/chat/stream", {
       json: body,
@@ -129,9 +142,13 @@ function serializeBatchQuery(query: BatchChatQuery): Record<string, unknown> {
     question: query.question,
     doc_ids: [...query.docIds],
   };
-  addOptional(payload, "match_count", query.matchCount);
+  if (query.matchCount !== undefined) {
+    validateMatchCount(query.matchCount);
+    payload.match_count = query.matchCount;
+  }
   addOptional(payload, "session_id", query.sessionId);
   addOptional(payload, "scope", query.scope);
+  applyRequestConfigFields(payload, query.retrieval, query.history);
   return payload;
 }
 
