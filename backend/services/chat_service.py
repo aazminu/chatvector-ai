@@ -10,14 +10,19 @@ from core.config import config
 from core.session import SessionContext
 from db import filter_document_ids_by_metadata, find_similar_chunks
 from services.context_service import build_context_from_chunks
-from services.history_config import prepare_turn_history
+from services.history_config import history_load_limit, prepare_turn_history
 from services.query_service import QueryTransformResult, transform_query
 from services.retrieval_config import (
     EffectiveRetrievalConfig,
+    InvalidRetrievalConfigError,
     resolve_retrieval_config,
     transformation_is_request_scoped,
 )
-from services.retrieval_presets import extract_preset_name, lookup_retrieval_preset
+from services.retrieval_presets import (
+    RetrievalPresetNotFoundError,
+    extract_preset_name,
+    lookup_retrieval_preset,
+)
 from services.retrieval_service import (
     filter_doc_ids_for_tenant,
     parse_retrieval_scope,
@@ -115,14 +120,20 @@ async def generate_answer_stream(question: str, context: str) -> AsyncGenerator[
 
 
 async def get_embeddings(
-    texts: list[str], *, tenant_id: str | None = None
+    texts: list[str],
+    *,
+    tenant_id: str | None = None,
+    use_cache: bool | None = None,
 ) -> list[list[float]]:
     """
     Lazily import batch embedding dependency to keep module import side-effect free.
+
+    ``use_cache`` is forwarded to the embedding layer so callers such as eval
+    can bypass the cache without a separate retrieval path.
     """
     from services.embedding_service import get_embeddings as _get_embeddings
 
-    return await _get_embeddings(texts, tenant_id=tenant_id)
+    return await _get_embeddings(texts, tenant_id=tenant_id, use_cache=use_cache)
 
 
 def _normalize_doc_ids(doc_ids: list[str], *, query_index: int) -> list[str]:
@@ -201,15 +212,15 @@ async def _resolve_retrieval_doc_ids(
 def _scope_error(
     doc_ids: list[str],
     *,
-    doc_id: str,
+    requested_doc_ids: list[str],
     effective: EffectiveRetrievalConfig,
 ) -> dict | None:
     """Structured error when a chat request has no usable scope, else ``None``.
 
-    With a ``metadata_filter`` the anchor ``doc_id`` must itself be in the
-    filtered scope set; the filter never replaces the anchor.
+    With a ``metadata_filter`` at least one requested/anchor document must
+    remain in the filtered scope set; the filter never replaces the anchors.
     """
-    if effective.metadata_filter and doc_id not in doc_ids:
+    if effective.metadata_filter and not any(doc_id in doc_ids for doc_id in requested_doc_ids):
         return {
             "code": "anchor_document_excluded_by_filter",
             "message": "The requested document is not in the retrieval scope after applying metadata_filter.",
@@ -304,7 +315,7 @@ class RetrievalResult:
         return payload
 
 
-def _resolve_effective_retrieval(
+def resolve_effective_retrieval(
     *,
     match_count: int,
     scope: str | None,
@@ -331,7 +342,10 @@ def _apply_compare_history_policy(
     compare_style: bool,
 ) -> EffectiveRetrievalConfig:
     """Single-document batch items skip history during transform unless overridden."""
-    if compare_style and effective.sources.get("skip_history_transform") != "request":
+    if compare_style and effective.sources.get("skip_history_transform") not in {
+        "request",
+        "preset",
+    }:
         return replace(effective, skip_history_transform=True)
     return effective
 
@@ -640,6 +654,7 @@ def _build_stream_complete_payload(
     latency_ms: int,
     model: str,
     retrieval_debug: dict | None = None,
+    request_latency_ms: int | None = None,
 ) -> dict:
     payload = {
         "type": "complete",
@@ -648,6 +663,8 @@ def _build_stream_complete_payload(
         "latency_ms": latency_ms,
         "model": model,
     }
+    if request_latency_ms is not None:
+        payload["request_latency_ms"] = request_latency_ms
     if retrieval_debug is not None:
         payload["retrieval_debug"] = retrieval_debug
     return payload
@@ -679,7 +696,7 @@ async def answer_question_for_document(
     """
     logger.info(f"Starting chat for document {doc_id} (session={session_id}, scope={scope or 'session'})")
     tenant_id = require_current_tenant(auth)
-    effective = _resolve_effective_retrieval(
+    effective = resolve_effective_retrieval(
         match_count=match_count,
         scope=scope,
         retrieval_fields=retrieval_fields,
@@ -692,7 +709,7 @@ async def answer_question_for_document(
         tenant_id=tenant_id,
         metadata_filter=effective.metadata_filter,
     )
-    scope_error = _scope_error(doc_ids, doc_id=doc_id, effective=effective)
+    scope_error = _scope_error(doc_ids, requested_doc_ids=[doc_id], effective=effective)
     if scope_error is not None:
         return {
             "question": question,
@@ -714,7 +731,9 @@ async def answer_question_for_document(
         import db
         try:
             history = await db.get_session_history(
-                session_id=session_id, limit=config.MAX_SESSION_HISTORY_MESSAGES, tenant_id=tenant_id
+                session_id=session_id,
+                limit=history_load_limit(history_fields),
+                tenant_id=tenant_id,
             )
         except Exception as e:
             logger.error(f"Failed to load chat history for session {session_id}: {e}", exc_info=True)
@@ -809,14 +828,15 @@ async def answer_question_stream_for_document(
     a server-sent events (SSE) stream.
     """
     logger.info(f"Starting chat stream for document {doc_id} (scope={scope or 'session'})")
+    request_started = time.perf_counter()
     tenant_id = require_current_tenant(auth)
-    effective = _resolve_effective_retrieval(
-        match_count=match_count,
-        scope=scope,
-        retrieval_fields=retrieval_fields,
-    )
 
     try:
+        effective = resolve_effective_retrieval(
+            match_count=match_count,
+            scope=scope,
+            retrieval_fields=retrieval_fields,
+        )
         doc_ids = await _resolve_retrieval_doc_ids(
             scope=effective.scope,
             requested_doc_ids=[doc_id],
@@ -824,7 +844,7 @@ async def answer_question_stream_for_document(
             tenant_id=tenant_id,
             metadata_filter=effective.metadata_filter,
         )
-        scope_error = _scope_error(doc_ids, doc_id=doc_id, effective=effective)
+        scope_error = _scope_error(doc_ids, requested_doc_ids=[doc_id], effective=effective)
         if scope_error is not None:
             yield _format_sse_event(
                 "error",
@@ -842,7 +862,9 @@ async def answer_question_stream_for_document(
             import db
             try:
                 history = await db.get_session_history(
-                    session_id=session_id, limit=config.MAX_SESSION_HISTORY_MESSAGES, tenant_id=tenant_id
+                    session_id=session_id,
+                    limit=history_load_limit(history_fields),
+                    tenant_id=tenant_id,
                 )
             except Exception as e:
                 logger.error(f"Failed to load chat history for session {session_id}: {e}", exc_info=True)
@@ -900,6 +922,7 @@ async def answer_question_stream_for_document(
             raise
 
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        request_latency_ms = int((time.perf_counter() - request_started) * 1000)
         from services.providers import get_llm_provider
 
         model_name = getattr(get_llm_provider(), "model_name", "")
@@ -931,6 +954,7 @@ async def answer_question_stream_for_document(
                 latency_ms=latency_ms,
                 model=model_name,
                 retrieval_debug=retrieval_debug,
+                request_latency_ms=request_latency_ms,
             ),
         )
         # Legacy completion marker — deprecated; retained for backward compatibility.
@@ -939,6 +963,22 @@ async def answer_question_stream_for_document(
 
     except asyncio.CancelledError:
         raise
+    except RetrievalPresetNotFoundError as e:
+        yield _format_sse_event(
+            "error",
+            _build_stream_error_payload(
+                code="preset_not_found",
+                message=str(e),
+            ),
+        )
+    except InvalidRetrievalConfigError as e:
+        yield _format_sse_event(
+            "error",
+            _build_stream_error_payload(
+                code="invalid_retrieval_config",
+                message=str(e),
+            ),
+        )
     except Exception as e:
         logger.error(f"Stream failed for document {doc_id}: {e}", exc_info=True)
         yield _format_sse_event(
@@ -975,7 +1015,7 @@ async def answer_questions_for_documents_batch(
 
     effective_configs: list[EffectiveRetrievalConfig] = []
     for query in normalized_queries:
-        effective = _resolve_effective_retrieval(
+        effective = resolve_effective_retrieval(
             match_count=query["match_count"],
             scope=query.get("scope"),
             retrieval_fields=query["retrieval_fields"] if "retrieval_fields" in query else None,
@@ -1012,14 +1052,16 @@ async def answer_questions_for_documents_batch(
 
     # Pre-load session histories so each query's transformation can resolve
     # follow-up references.  One DB round-trip per unique session_id.
-    async def _load_batch_history(session_id: str | None) -> list[dict]:
+    async def _load_batch_history(
+        session_id: str | None, history_fields: dict | None
+    ) -> list[dict]:
         if not session_id:
             return []
         import db
         try:
             return await db.get_session_history(
                 session_id=session_id,
-                limit=config.MAX_SESSION_HISTORY_MESSAGES,
+                limit=history_load_limit(history_fields),
                 tenant_id=tenant_id,
             )
         except Exception as e:
@@ -1033,7 +1075,10 @@ async def answer_questions_for_documents_batch(
 
     per_query_histories: list[list[dict]] = list(
         await asyncio.gather(
-            *[_load_batch_history(q.get("session_id")) for q in normalized_queries]
+            *[
+                _load_batch_history(q.get("session_id"), q.get("history_fields"))
+                for q in normalized_queries
+            ]
         )
     )
     history_plans = [
@@ -1130,16 +1175,18 @@ async def answer_questions_for_documents_batch(
                 tenant_id=tenant_id,
                 metadata_filter=effective.metadata_filter,
             )
-            if not doc_ids:
+            scope_error = _scope_error(
+                doc_ids,
+                requested_doc_ids=query["doc_ids"],
+                effective=effective,
+            )
+            if scope_error is not None:
                 return {
                     "status": "error",
                     "question": query["question"],
                     "doc_ids": query["doc_ids"],
                     "chunks": 0,
-                    "error": {
-                        "code": "no_documents_in_scope",
-                        "message": "No documents available for retrieval in the requested scope.",
-                    },
+                    "error": scope_error,
                     "latency_ms": 0,
                     "model": "",
                     "session_id": session_id,

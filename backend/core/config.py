@@ -37,6 +37,7 @@ STALE_INGESTION_STATUSES = [
 ]
 VALID_CHUNKING_STRATEGIES = {"fixed", "paragraph", "semantic"}
 VALID_QUERY_TRANSFORMATION_STRATEGIES = {"rewrite", "expand", "stepback"}
+VALID_RERANKER_PROVIDERS = {"similarity", "cohere"}
 VALID_LLM_PROVIDERS = set(LLM_PROVIDER_NAMES)
 VALID_EMBEDDING_PROVIDERS = set(EMBEDDING_PROVIDER_NAMES)
 
@@ -79,6 +80,16 @@ def _get_embedding_provider() -> str:
         valid = ", ".join(sorted(VALID_EMBEDDING_PROVIDERS))
         raise ValueError(
             f"Invalid EMBEDDING_PROVIDER={provider!r}. Expected one of: {valid}."
+        )
+    return provider
+
+
+def _get_reranker_provider() -> str:
+    provider = os.getenv("RERANKER_PROVIDER", "similarity").strip().lower()
+    if provider not in VALID_RERANKER_PROVIDERS:
+        valid = ", ".join(sorted(VALID_RERANKER_PROVIDERS))
+        raise ValueError(
+            f"Invalid RERANKER_PROVIDER={provider!r}. Expected one of: {valid}."
         )
     return provider
 
@@ -163,7 +174,7 @@ class Settings:
         "true",
         "yes",
     )
-    RERANKER_PROVIDER: str = os.getenv("RERANKER_PROVIDER", "similarity").strip().lower()
+    RERANKER_PROVIDER: str = _get_reranker_provider()
     # Hosted reranker (Cohere). The key is process-env only, never request-supplied.
     COHERE_API_KEY: str | None = os.getenv("COHERE_API_KEY") or None
     COHERE_RERANK_MODEL: str = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5").strip()
@@ -417,25 +428,8 @@ _validate_webhook_settings(config)
 _validate_artifact_storage(config)
 _validate_multi_api_instance(config)
 
-if config.QUERY_TRANSFORMATION_HISTORY_WINDOW > config.MAX_SESSION_HISTORY_MESSAGES:
-    logger.warning(
-        "QUERY_TRANSFORMATION_HISTORY_WINDOW=%d exceeds MAX_SESSION_HISTORY_MESSAGES=%d. "
-        "The effective window will be capped at %d messages loaded from the session. "
-        "Lower QUERY_TRANSFORMATION_HISTORY_WINDOW or raise MAX_SESSION_HISTORY_MESSAGES.",
-        config.QUERY_TRANSFORMATION_HISTORY_WINDOW,
-        config.MAX_SESSION_HISTORY_MESSAGES,
-        config.MAX_SESSION_HISTORY_MESSAGES,
-    )
-
-if config.GENERATION_HISTORY_WINDOW > config.MAX_SESSION_HISTORY_MESSAGES:
-    logger.warning(
-        "GENERATION_HISTORY_WINDOW=%d exceeds MAX_SESSION_HISTORY_MESSAGES=%d. "
-        "The effective window will be capped at %d messages loaded from the session. "
-        "Lower GENERATION_HISTORY_WINDOW or raise MAX_SESSION_HISTORY_MESSAGES.",
-        config.GENERATION_HISTORY_WINDOW,
-        config.MAX_SESSION_HISTORY_MESSAGES,
-        config.MAX_SESSION_HISTORY_MESSAGES,
-    )
+# Requested history windows (0–100) are loaded up to history_config.MAX_HISTORY_WINDOW.
+# MAX_SESSION_HISTORY_MESSAGES is the default load floor, not a silent request ceiling.
 
 
 def _validate_cors_origins(origins: list[str]) -> None:
