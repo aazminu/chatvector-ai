@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import mimetypes
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,8 @@ from ._common import (
     build_batch_chat_payload,
     build_chat_payload,
     build_client_headers,
+    build_upload_form_data,
+    content_type_for_filename,
     cap_duration_to_deadline,
     default_error_message,
     encode_path_component,
@@ -119,6 +120,7 @@ class AsyncChatVectorClient:
         session_id: str | None = None,
         replace_document_id: str | None = None,
         idempotency_key: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> DocumentResponse:
         """
         Upload a document for ingestion.
@@ -130,12 +132,15 @@ class AsyncChatVectorClient:
         document in place: it keeps its ID, and its prior content stays
         retrievable until the new content is ready (use ``wait_for_ready`` to
         wait for the swap).
+
+        ``metadata`` is an optional document metadata object sent as the
+        multipart JSON ``metadata`` field. It is omitted entirely when unset.
         """
         path = Path(file_path)
         if not path.is_file():
             raise FileNotFoundError(f"Document file was not found: {file_path}")
 
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        content_type = content_type_for_filename(path.name)
         endpoints = ("ingest", "upload")
         last_error: ChatVectorAPIError | None = None
         headers: JSONDict = {}
@@ -146,11 +151,10 @@ class AsyncChatVectorClient:
                 raise ValueError("idempotency_key must not be empty.")
             headers["Idempotency-Key"] = idempotency_key.strip()
         request_headers: JSONDict | None = headers or None
-        form_data: JSONDict | None = None
-        if replace_document_id is not None:
-            if not replace_document_id.strip():
-                raise ValueError("replace_document_id must not be empty.")
-            form_data = {"replace_document_id": replace_document_id.strip()}
+        form_data = build_upload_form_data(
+            replace_document_id=replace_document_id,
+            metadata=metadata,
+        )
 
         for endpoint in endpoints:
             with path.open("rb") as file_handle:

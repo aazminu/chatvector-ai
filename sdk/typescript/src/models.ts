@@ -23,6 +23,8 @@ export type RetrievalConfig = {
   skipHistoryTransform?: boolean;
   /** Reserved for Named Retrieval Configuration Presets when backend ships it. */
   preset?: string;
+  /** Document metadata filter; serialized as backend ``metadata_filter``. */
+  metadataFilter?: Record<string, unknown>;
 };
 
 /** Per-request history overrides (nested ``history`` on chat bodies). */
@@ -50,6 +52,8 @@ export type UploadInput =
       /** Re-ingest this completed/failed document in place instead of creating a new one. */
       replaceDocumentId?: string;
       idempotencyKey?: string;
+      /** Document metadata sent as the multipart JSON ``metadata`` field. */
+      metadata?: Record<string, unknown>;
     }
   | {
       data: Uint8Array | Blob;
@@ -59,6 +63,8 @@ export type UploadInput =
       /** Re-ingest this completed/failed document in place instead of creating a new one. */
       replaceDocumentId?: string;
       idempotencyKey?: string;
+      /** Document metadata sent as the multipart JSON ``metadata`` field. */
+      metadata?: Record<string, unknown>;
     };
 
 /** Opt-in retrieval debug metadata when the backend exposes it. */
@@ -203,6 +209,8 @@ export type DocumentStatus = {
   statusDetail?: string;
   /** Optional ingestion timing, attempt count, and failure classification. */
   job?: Record<string, unknown> | null;
+  /** Document metadata when the status payload includes it. */
+  metadata?: Record<string, unknown>;
   _raw?: Record<string, unknown>;
 };
 
