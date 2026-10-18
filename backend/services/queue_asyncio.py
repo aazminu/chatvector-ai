@@ -20,14 +20,17 @@ from typing import Optional
 
 import db
 from core.config import config
-from db.base import REPLACEMENT_FAILED, REPLACEMENT_IN_PROGRESS
+from db.base import REPLACEMENT_IN_PROGRESS
+from services.ingestion_outcome import (
+    ingestion_failure_is_terminal,
+    record_terminal_ingestion_failure,
+)
 from services.queue_base import (
     BaseIngestionQueue,
     DLQEntry,
     QueueFull,
     QueueJob,
     TokenBucketRateLimiter,
-    is_retryable_ingestion_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,7 +217,7 @@ class AsyncioIngestionQueue(BaseIngestionQueue):
         logger.info(f"Ingestion worker-{worker_id} stopped")
 
     async def _process_job(self, job: QueueJob, worker_id: int) -> None:
-        from services.ingestion_pipeline import IngestionPipeline, UploadPipelineError
+        from services.ingestion_pipeline import IngestionPipeline
 
         logger.info(
             f"Worker-{worker_id} processing document {job.doc_id} "
@@ -235,27 +238,10 @@ class AsyncioIngestionQueue(BaseIngestionQueue):
                 attempt=job.attempt,
             )
         except Exception as exc:
-            if isinstance(exc, UploadPipelineError) and 400 <= exc.status_code < 500:
+            if ingestion_failure_is_terminal(exc, job.attempt):
                 logger.error(
-                    f"Document {job.doc_id} ({job.file_name!r}) failed with "
-                    f"non-retryable pipeline error (HTTP {exc.status_code}) "
-                    f"— moving to DLQ: {exc}",
-                    exc_info=True,
-                )
-                self._append_dlq(DLQEntry(
-                    doc_id=job.doc_id,
-                    file_name=job.file_name,
-                    content_type=job.content_type,
-                    attempt=job.attempt,
-                    error=str(exc),
-                    tenant_id=job.tenant_id,
-                ))
-                return
-
-            if not is_retryable_ingestion_failure(exc):
-                logger.error(
-                    f"Document {job.doc_id} ({job.file_name!r}) failed with "
-                    f"non-retryable error — moving to DLQ: {exc}",
+                    f"Document {job.doc_id} ({job.file_name!r}) terminal failure "
+                    f"on attempt {job.attempt} — moving to DLQ: {exc}",
                     exc_info=True,
                 )
                 self._append_dlq(DLQEntry(
@@ -309,31 +295,22 @@ class AsyncioIngestionQueue(BaseIngestionQueue):
                         job.doc_id,
                         error_msg,
                     )
-                    try:
-                        if job.replace:
-                            await db.set_document_status_detail(
-                                job.doc_id,
-                                REPLACEMENT_FAILED,
-                                tenant_id=job.tenant_id,
-                                error={
-                                    "stage": "queued",
-                                    "message": error_msg,
-                                },
-                            )
-                        else:
-                            await db.update_document_status(
+                    if job.tenant_id:
+                        try:
+                            await record_terminal_ingestion_failure(
                                 doc_id=job.doc_id,
-                                status="failed",
                                 tenant_id=job.tenant_id,
                                 error={
                                     "stage": "queued",
+                                    "code": "queue_full",
                                     "message": error_msg,
                                 },
+                                replace=job.replace,
                             )
-                    except Exception as status_err:
-                        logger.error(
-                            f"Failed to set failed status for {job.doc_id}: {status_err}"
-                        )
+                        except Exception as status_err:
+                            logger.error(
+                                f"Failed to set failed status for {job.doc_id}: {status_err}"
+                            )
                     self._append_dlq(DLQEntry(
                         doc_id=job.doc_id,
                         file_name=job.file_name,

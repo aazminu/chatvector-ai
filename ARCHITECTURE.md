@@ -119,14 +119,18 @@ to having no cache — no Redis calls occur.
 
 When enabled:
 
-- Cache key hashes `(EMBEDDING_PROVIDER, provider.model_name, text)` —
+- Cache key hashes `(EMBEDDING_PROVIDER, provider.model_name, text)` under
+  `EMBEDDING_CACHE_KEY_PREFIX` (default `chatvector:embedcache`) —
   changing the provider or model can never return a vector produced by a
   different model, since the key changes with it.
 - Values are stored as JSON-encoded float lists; a cache hit returns the
-  exact bytes stored on a prior miss.
+  exact bytes stored on a prior miss. `EMBEDDING_CACHE_TTL_SECONDS` controls
+  expiry (`0`, the default, means no expiry).
 - Any Redis error (down, unreachable, timeout) is caught and logged as a
   warning; the request falls through to the real provider call — the cache
-  never fails a request.
+  never fails a request. Cache Redis operations use
+  `EMBEDDING_CACHE_REDIS_TIMEOUT_SEC` (default 0.25s), not the general
+  `REDIS_SOCKET_TIMEOUT_SEC`, so a sick cache cannot stall embedding calls.
 - `EMBEDDING_CACHE_INCLUDE_TENANT` optionally folds `tenant_id` into the key
   for deployments where embedding text could be cross-tenant sensitive
   under a shared Redis instance. This only changes the cache key — it is
@@ -347,7 +351,7 @@ full cross-surface contract and audit checklist.
 | DB operations (asyncpg) | `SQLALCHEMY_STATEMENT_TIMEOUT_SEC` | asyncpg client `command_timeout` (not server `statement_timeout`) |
 | Embedding calls | `EMBEDDING_HTTP_TIMEOUT_SEC` | provider HTTP client + outer `retry_async` |
 | LLM HTTP client | `LLM_HTTP_TIMEOUT_MS` | SDK/`HttpOptions` timeout (ms) |
-| Redis clients | `REDIS_SOCKET_TIMEOUT_SEC` (default 5s) | `socket_timeout` + `socket_connect_timeout` |
+| Redis clients | `REDIS_SOCKET_TIMEOUT_SEC` (default 5s) | `socket_timeout` + `socket_connect_timeout` (embedding cache uses `EMBEDDING_CACHE_REDIS_TIMEOUT_SEC`) |
 | SQLAlchemy pool | 30s checkout | `pool_timeout` on engine |
 | Health checks | 10s (embed), 10s (LLM) | `asyncio.wait_for` around single-attempt probes |
 
@@ -371,6 +375,7 @@ Production never silently falls back to IP-based limiting.
 | `GET /documents` | 120/minute |
 | `GET /documents/{id}/status` | 120/minute |
 | `DELETE /documents/{id}` | 60/hour |
+| `POST /feedback`, `GET /feedback` | 60/minute |
 
 All limits are configurable via env vars (`RATE_LIMIT_*`).
 429 responses return `{"detail": {"code": "rate_limited", "message": "..."}}`.

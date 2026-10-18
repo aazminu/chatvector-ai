@@ -47,6 +47,36 @@ logger = logging.getLogger(__name__)
 # Full-text config matches migration 004 (to_tsvector / plainto_tsquery).
 _FTS_LANGUAGE = "english"
 
+
+def _replacement_error_preserving_prior(
+    status: str | None,
+    existing_error: dict | None,
+    status_detail: str | None,
+    new_error: dict,
+) -> dict:
+    """Keep the original failure when a replacement of a failed document also fails.
+
+    A completed document's replacement error replaces any stale error. A failed
+    document keeps the error that explains why it has no content under
+    ``prior_error``. Later replacement failures keep that same original error
+    rather than nesting a history of attempts.
+    """
+    if (
+        status_detail != REPLACEMENT_FAILED
+        or status != "failed"
+        or not isinstance(existing_error, dict)
+        or not existing_error
+    ):
+        return new_error
+
+    merged = dict(new_error)
+    prior = existing_error.get("prior_error")
+    if isinstance(prior, dict) and prior:
+        merged["prior_error"] = prior
+    else:
+        merged["prior_error"] = existing_error
+    return merged
+
 # Only completed/failed documents may be replaced (staged replacement, migration 014).
 _REPLACEABLE_STATUSES = ("completed", "failed")
 
@@ -539,7 +569,13 @@ class SQLAlchemyService(DatabaseService):
                 return
 
             document.status_detail = status_detail
-            document.error = error
+            if error is not None:
+                document.error = _replacement_error_preserving_prior(
+                    document.status,
+                    document.error,
+                    status_detail,
+                    error,
+                )
             _apply_job_metadata_patch(document, job_metadata_patch)
             document.updated_at = datetime.utcnow()
             await session.commit()
@@ -695,24 +731,36 @@ class SQLAlchemyService(DatabaseService):
             # the active chunks alone so the prior content stays retrievable, and
             # clear the in-progress marker so the document can be replaced again.
             replacement_rows = await session.execute(
-                select(Document.id).where(
+                select(Document.id, Document.status, Document.error).where(
                     Document.status_detail == REPLACEMENT_IN_PROGRESS
                 )
             )
-            replacement_ids = {str(row[0]) for row in replacement_rows}
-            if replacement_ids:
+            replacement_ids: set[str] = set()
+            restart_error = {
+                "stage": "server_restart",
+                "code": "server_restart",
+                "message": (
+                    "Server restarted while document replacement was being processed."
+                ),
+            }
+            for row in replacement_rows:
+                replacement_id = str(row[0])
+                replacement_ids.add(replacement_id)
                 await session.execute(
                     sql_update(Document)
-                    .where(Document.id.in_(replacement_ids))
+                    .where(Document.id == replacement_id)
                     .values(
                         status_detail=REPLACEMENT_FAILED,
-                        error={
-                            "stage": "server_restart",
-                            "message": "Server restarted while document replacement was being processed.",
-                        },
+                        error=_replacement_error_preserving_prior(
+                            row[1],
+                            row[2],
+                            REPLACEMENT_FAILED,
+                            restart_error,
+                        ),
                         updated_at=datetime.utcnow(),
                     )
                 )
+            if replacement_ids:
                 await session.commit()
                 logger.info(
                     f"[PostgreSQL] Reset {len(replacement_ids)} stale replacement(s) on startup"

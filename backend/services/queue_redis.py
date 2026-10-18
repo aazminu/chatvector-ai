@@ -42,7 +42,7 @@ from rq import SimpleWorker
 from rq.job import Job as RQJob
 
 from core.config import config, redis_connection_kwargs
-from db.base import REPLACEMENT_FAILED, REPLACEMENT_IN_PROGRESS
+from db.base import REPLACEMENT_IN_PROGRESS
 from utils.url_display import safe_url_display
 from services.artifact_storage import (
     ArtifactMissingError,
@@ -50,13 +50,16 @@ from services.artifact_storage import (
     get_artifact_storage,
 )
 from services.ingestion_webhook import WEBHOOK_QUEUE_NAME
+from services.ingestion_outcome import (
+    ingestion_failure_is_terminal,
+    record_terminal_ingestion_failure,
+)
 from services.queue_base import (
     BaseIngestionQueue,
     DLQEntry,
     QueueFull,
     QueueJob,
     get_process_embedding_rate_limiter,
-    is_retryable_ingestion_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +86,38 @@ def _job_payload_missing_error() -> dict:
         "stage": "queued",
         "message": JOB_PAYLOAD_MISSING_USER_MESSAGE,
     }
+
+
+async def _record_missing_artifact_failure(
+    *,
+    doc_id: str,
+    tenant_id: Optional[str],
+    replace: bool,
+    error_payload: dict,
+) -> None:
+    """Terminal failure for a missing or unreadable upload artifact.
+
+    Uses the shared ingestion outcome helper so job metadata and the
+    ``ingestion.failed`` webhook match other terminal failures. The error
+    ``code`` (``job_payload_missing`` or ``job_payload_unreadable``) is preserved.
+    """
+    from services.ingestion_outcome import record_terminal_ingestion_failure
+
+    if not tenant_id:
+        logger.error(
+            "Cannot record missing artifact for document %s without a tenant",
+            doc_id,
+        )
+        return
+    try:
+        await record_terminal_ingestion_failure(
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            error=error_payload,
+            replace=replace,
+        )
+    except Exception:
+        logger.exception("Failed to mark document %s as failed", doc_id)
 
 
 def _rq_worker_name(worker_id: int) -> str:
@@ -130,7 +165,7 @@ async def _async_execute_job(
     """Async bridge that replicates the retry / DLQ logic from AsyncioIngestionQueue."""
     import db as db_module
     from db import worker_db_context
-    from services.ingestion_pipeline import IngestionPipeline, UploadPipelineError
+    from services.ingestion_pipeline import IngestionPipeline
 
     async with worker_db_context():
         _redis_conn = redis_lib.Redis.from_url(config.REDIS_URL, **redis_connection_kwargs())
@@ -153,24 +188,12 @@ async def _async_execute_job(
             await _cleanup_artifact(artifact_uri, doc_id, tenant_id)
         except ArtifactMissingError:
             logger.error("Artifact missing for doc %s", doc_id)
-            error_payload = _job_payload_missing_error()
-            try:
-                if replace:
-                    await db_module.set_document_status_detail(
-                        doc_id,
-                        REPLACEMENT_FAILED,
-                        tenant_id=tenant_id,
-                        error=error_payload,
-                    )
-                else:
-                    await db_module.update_document_status(
-                        doc_id=doc_id,
-                        status="failed",
-                        error=error_payload,
-                        tenant_id=tenant_id,
-                    )
-            except Exception:
-                logger.exception("Failed to mark document %s as failed", doc_id)
+            await _record_missing_artifact_failure(
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                replace=replace,
+                error_payload=_job_payload_missing_error(),
+            )
             _push_dlq_entry(DLQEntry(
                 doc_id=doc_id,
                 file_name=file_name,
@@ -183,28 +206,16 @@ async def _async_execute_job(
         except ArtifactUnreadableError as exc:
             error_msg = f"Cannot read upload payload for doc {doc_id}: {exc.reason}"
             logger.error(error_msg)
-            unreadable_error = {
-                "code": "job_payload_unreadable",
-                "stage": "queued",
-                "message": JOB_PAYLOAD_MISSING_USER_MESSAGE,
-            }
-            try:
-                if replace:
-                    await db_module.set_document_status_detail(
-                        doc_id,
-                        REPLACEMENT_FAILED,
-                        tenant_id=tenant_id,
-                        error=unreadable_error,
-                    )
-                else:
-                    await db_module.update_document_status(
-                        doc_id=doc_id,
-                        status="failed",
-                        error=unreadable_error,
-                        tenant_id=tenant_id,
-                    )
-            except Exception:
-                logger.exception("Failed to mark document %s as failed", doc_id)
+            await _record_missing_artifact_failure(
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                replace=replace,
+                error_payload={
+                    "code": "job_payload_unreadable",
+                    "stage": "queued",
+                    "message": JOB_PAYLOAD_MISSING_USER_MESSAGE,
+                },
+            )
             _push_dlq_entry(DLQEntry(
                 doc_id=doc_id,
                 file_name=file_name,
@@ -215,27 +226,10 @@ async def _async_execute_job(
             ), conn=_redis_conn)
             return
         except Exception as exc:
-            if isinstance(exc, UploadPipelineError) and 400 <= exc.status_code < 500:
+            if ingestion_failure_is_terminal(exc, attempt):
                 logger.error(
-                    "Document %s (%r) non-retryable error (HTTP %d) — DLQ: %s",
-                    doc_id, file_name, exc.status_code, exc,
-                    exc_info=True,
-                )
-                await _cleanup_artifact(artifact_uri, doc_id, tenant_id)
-                _push_dlq_entry(DLQEntry(
-                    doc_id=doc_id,
-                    file_name=file_name,
-                    content_type=content_type,
-                    attempt=attempt,
-                    error=str(exc),
-                    tenant_id=tenant_id,
-                ), conn=_redis_conn)
-                return
-
-            if not is_retryable_ingestion_failure(exc):
-                logger.error(
-                    "Document %s (%r) non-retryable error — DLQ: %s",
-                    doc_id, file_name, exc,
+                    "Document %s (%r) terminal failure on attempt %s — DLQ: %s",
+                    doc_id, file_name, attempt, exc,
                     exc_info=True,
                 )
                 await _cleanup_artifact(artifact_uri, doc_id, tenant_id)
@@ -257,15 +251,22 @@ async def _async_execute_job(
                     "Document %s failed attempt %d — re-enqueuing after %.2fs: %s",
                     doc_id, next_attempt, delay, exc,
                 )
+                retry_job_patch = {"attempt": next_attempt + 1}
                 try:
                     if replace:
                         # Keep `status` (and the retrievable chunks) untouched.
                         await db_module.set_document_status_detail(
-                            doc_id, REPLACEMENT_IN_PROGRESS, tenant_id=tenant_id,
+                            doc_id,
+                            REPLACEMENT_IN_PROGRESS,
+                            tenant_id=tenant_id,
+                            job_metadata_patch=retry_job_patch,
                         )
                     else:
                         await db_module.update_document_status(
-                            doc_id=doc_id, status="retrying", tenant_id=tenant_id,
+                            doc_id=doc_id,
+                            status="retrying",
+                            tenant_id=tenant_id,
+                            job_metadata_patch=retry_job_patch,
                         )
                 except Exception as status_err:
                     logger.error(
@@ -283,32 +284,23 @@ async def _async_execute_job(
                         doc_id,
                         error_msg,
                     )
-                    try:
-                        if replace:
-                            await db_module.set_document_status_detail(
-                                doc_id,
-                                REPLACEMENT_FAILED,
-                                tenant_id=tenant_id,
-                                error={
-                                    "stage": "queued",
-                                    "message": error_msg,
-                                },
-                            )
-                        else:
-                            await db_module.update_document_status(
+                    if tenant_id:
+                        try:
+                            await record_terminal_ingestion_failure(
                                 doc_id=doc_id,
-                                status="failed",
                                 tenant_id=tenant_id,
                                 error={
                                     "stage": "queued",
+                                    "code": "queue_full",
                                     "message": error_msg,
                                 },
+                                replace=replace,
                             )
-                    except Exception as status_err:
-                        logger.error(
-                            "Failed to set failed status for %s: %s",
-                            doc_id, status_err,
-                        )
+                        except Exception as status_err:
+                            logger.error(
+                                "Failed to set failed status for %s: %s",
+                                doc_id, status_err,
+                            )
                     _push_dlq_entry(DLQEntry(
                         doc_id=doc_id,
                         file_name=file_name,

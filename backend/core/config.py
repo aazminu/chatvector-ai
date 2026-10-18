@@ -290,6 +290,7 @@ class Settings:
     RATE_LIMIT_DOCUMENT_DELETE: str = os.getenv(
         "RATE_LIMIT_DOCUMENT_DELETE", "60/hour"
     )
+    RATE_LIMIT_FEEDBACK: str = os.getenv("RATE_LIMIT_FEEDBACK", "60/minute")
 
     PROMPT_PERSONA: str = _get_persona()
     SYSTEM_PROMPT_PATH: str = _get_system_prompt_path(PROMPT_PERSONA)
@@ -328,6 +329,11 @@ class Settings:
     EMBEDDING_CACHE_INCLUDE_TENANT: bool = os.getenv(
         "EMBEDDING_CACHE_INCLUDE_TENANT", "false"
     ).lower() in ("1", "true", "yes")
+    # Cache reads are optional and fail-open. Keep this well below
+    # REDIS_SOCKET_TIMEOUT_SEC so a sick cache cannot add seconds to embedding.
+    EMBEDDING_CACHE_REDIS_TIMEOUT_SEC: float = max(
+        0.05, float(os.getenv("EMBEDDING_CACHE_REDIS_TIMEOUT_SEC", "0.25"))
+    )
 
     # Mutating-route idempotency (Idempotency-Key header → Redis TTL store).
     IDEMPOTENCY_KEY_PREFIX: str = os.getenv(
