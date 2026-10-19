@@ -95,7 +95,10 @@ export default function UploadModal({
     }
   }, [attachment?.status]);
 
-  const showSuccess = hasActiveUpload && attachment?.status === "ready";
+  const hasServerError =
+    attachment?.status === "failed" || Boolean(attachment?.errorMessage);
+  const showSuccess =
+    hasActiveUpload && attachment?.status === "ready" && !hasServerError;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -198,8 +201,9 @@ export default function UploadModal({
   const showServerFailed =
     hasActiveUpload &&
     !isUploading &&
+    !awaitingProcessing &&
     !uploadHttpFailed &&
-    attachment?.status === "failed";
+    hasServerError;
   const showFailed = showHttpFailed || showServerFailed;
 
   const showProcessing =

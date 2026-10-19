@@ -438,11 +438,13 @@ export type AttachmentState = {
   status: "processing" | "ready" | "failed";
   stage?: string;
   chunks?: { total: number; processed: number };
+  processingTime?: string;
   queue_position?: number;
 };
 
 export type DocumentStatusPayload = {
   status: string;
+  status_detail?: string;
   stage?: string;
   error?: { stage?: string; message?: string };
   chunks?: { total: number; processed: number } | null;
@@ -501,6 +503,11 @@ export async function getDocumentStatus(
   }
   const data = (await res.json()) as Record<string, unknown>;
   const status = String(data?.status ?? "");
+  const statusDetailRaw = data?.status_detail;
+  const statusDetail =
+    typeof statusDetailRaw === "string" && statusDetailRaw.length > 0
+      ? statusDetailRaw
+      : undefined;
   const stageRaw = data?.stage;
   const stage =
     typeof stageRaw === "string" && stageRaw.length > 0 ? stageRaw : undefined;
@@ -517,6 +524,7 @@ export async function getDocumentStatus(
   const queuePosition = parseQueuePosition(data?.queue_position);
   return {
     status,
+    ...(statusDetail !== undefined ? { status_detail: statusDetail } : {}),
     ...(stage !== undefined ? { stage } : {}),
     ...(error !== undefined ? { error } : {}),
     ...(chunks !== undefined ? { chunks } : {}),

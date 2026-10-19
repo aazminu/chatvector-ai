@@ -873,6 +873,40 @@ describe("getDocumentStatus", () => {
       queue_position: 1,
     });
   });
+
+  it("preserves status_detail and error during and after in-place replacement", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          status_detail: "replacement_in_progress",
+          queue_position: 2,
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(getDocumentStatus("/documents/doc-123/status")).resolves.toEqual({
+      status: "completed",
+      status_detail: "replacement_in_progress",
+      queue_position: 2,
+    });
+
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          status_detail: "replacement_failed",
+          error: { stage: "embedding", message: "Embedding provider failed" },
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(getDocumentStatus("/documents/doc-123/status")).resolves.toEqual({
+      status: "completed",
+      status_detail: "replacement_failed",
+      error: { stage: "embedding", message: "Embedding provider failed" },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
