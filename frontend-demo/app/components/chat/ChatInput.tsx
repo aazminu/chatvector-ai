@@ -6,6 +6,7 @@ import UploadButton from "../UploadButton";
 import AttachmentChip from "../AttachmentChip";
 import type { AttachmentState } from "../../lib/api";
 import { useDocumentPolling } from "../../lib/hooks/useDocumentPolling";
+import type { RetrievalScope } from "../../lib/retrievalSettings";
 
 const TEXTAREA_MIN_PX = 44;
 const TEXTAREA_MAX_PX = 220;
@@ -26,6 +27,7 @@ type Props = {
   onUploadClick: () => void;
   uploadButtonRef?: RefObject<HTMLButtonElement | null>;
   stopStreaming: () => void;
+  scope?: RetrievalScope;
 };
 
 export default function ChatInput({
@@ -44,6 +46,7 @@ export default function ChatInput({
   onUploadClick,
   uploadButtonRef,
   stopStreaming,
+  scope = "session",
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,6 +83,16 @@ export default function ChatInput({
           />
         </div>
       )}
+      <p
+        data-testid="chat-scope-indicator"
+        className="px-4 pt-2 pb-1 text-xs text-muted bg-background"
+      >
+        {scope === "tenant"
+          ? "Tenant scope: searches the tenant's ready documents (can include documents other than the attached chip)."
+          : attachment
+            ? `Session scope: searches only the selected document (${attachment.fileName}).`
+            : "Session scope: no document selected — upload a document to search it."}
+      </p>
       {attachment?.status === "processing" && (
         <p className="px-4 pb-1 text-xs text-amber-400 bg-background">
           Document still processing — sending is disabled until it is ready.

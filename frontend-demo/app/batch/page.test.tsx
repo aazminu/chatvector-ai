@@ -150,4 +150,17 @@ describe("BatchPage", () => {
       expect(screen.getByText("Answer 1")).toBeInTheDocument();
     });
   });
+
+  it("does not show chat session-scope indicator copy on the batch page", async () => {
+    render(<BatchPage />);
+    await screen.findByText("File 1.pdf");
+
+    expect(screen.queryByTestId("chat-scope-indicator")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Session scope:/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "Retrieval scope" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Batch mode help" }));
+    expect(screen.getByText(/sends one query per document/i)).toBeInTheDocument();
+    expect(screen.getByText(/sends one query across all selected documents/i)).toBeInTheDocument();
+  });
 });

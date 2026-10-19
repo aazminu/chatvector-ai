@@ -183,6 +183,7 @@ export default function ChatPage() {
             onUploadClick={() => setShowModal(true)}
             uploadButtonRef={uploadButtonRef}
             stopStreaming={stopStreaming}
+            scope={settings.scope}
           />
         </div>
       </div>

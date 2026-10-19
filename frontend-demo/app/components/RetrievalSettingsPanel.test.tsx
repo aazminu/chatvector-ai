@@ -40,6 +40,29 @@ describe("RetrievalSettingsPanel", () => {
     await userEvent.click(screen.getByText("Retrieval settings"));
 
     expect(screen.queryByRole("radiogroup", { name: "Retrieval scope" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Scope help" })).not.toBeInTheDocument();
     expect(screen.getByRole("slider")).toBeInTheDocument();
+  });
+
+  it("explains selected-document session scope and ready-document tenant scope in the help popover", async () => {
+    render(
+      <RetrievalSettingsPanel
+        settings={DEFAULT_RETRIEVAL_SETTINGS}
+        onScopeChange={vi.fn()}
+        onMatchCountChange={vi.fn()}
+      />
+    );
+
+    await userEvent.click(screen.getByText("Retrieval settings"));
+    await userEvent.click(screen.getByRole("button", { name: "Scope help" }));
+
+    expect(
+      screen.getByText(/searches only the selected document attached to this chat/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /searches the tenant's ready documents, which can include documents other than the attached chip/i
+      )
+    ).toBeInTheDocument();
   });
 });
