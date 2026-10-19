@@ -431,4 +431,52 @@ describe("useChat", () => {
     rafSpy.mockRestore();
     cancelSpy.mockRestore();
   });
+
+  it("removes the previous document from documentStore when handleUploadAccepted replaces an existing attachment", async () => {
+    const { removeUploadedDocument, saveUploadedDocument } = await import(
+      "../documentStore"
+    );
+    vi.mocked(removeUploadedDocument).mockClear();
+    vi.mocked(saveUploadedDocument).mockClear();
+
+    const { result } = renderHook(() =>
+      useChat("session-a", DEFAULT_RETRIEVAL_SETTINGS),
+    );
+
+    await waitFor(() => expect(result.current.historyLoading).toBe(false));
+
+    act(() => {
+      result.current.handleUploadAccepted({
+        fileName: "first.pdf",
+        documentId: "doc-old",
+        statusEndpoint: "/documents/doc-old/status",
+      });
+    });
+
+    expect(removeUploadedDocument).not.toHaveBeenCalled();
+    expect(saveUploadedDocument).toHaveBeenCalledWith({
+      documentId: "doc-old",
+      fileName: "first.pdf",
+    });
+
+    await waitFor(() =>
+      expect(result.current.attachment?.status).toBe("ready"),
+    );
+
+    act(() => {
+      result.current.handleUploadAccepted({
+        fileName: "second.pdf",
+        documentId: "doc-new",
+        statusEndpoint: "/documents/doc-new/status",
+      });
+    });
+
+    expect(removeUploadedDocument).toHaveBeenCalledWith("doc-old");
+    expect(saveUploadedDocument).toHaveBeenCalledWith({
+      documentId: "doc-new",
+      fileName: "second.pdf",
+    });
+    expect(result.current.attachment?.documentId).toBe("doc-new");
+    expect(result.current.attachment?.fileName).toBe("second.pdf");
+  });
 });

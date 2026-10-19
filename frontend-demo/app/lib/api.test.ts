@@ -566,6 +566,51 @@ describe("uploadDocument", () => {
       })
     );
   });
+
+  it("appends replace_document_id to FormData when replaceDocumentId is provided", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          document_id: "doc-2",
+          status_endpoint: "/documents/doc-2/status",
+        }),
+        { status: 202 }
+      )
+    );
+
+    const file = new File(["content"], "replacement.pdf", {
+      type: "application/pdf",
+    });
+    await uploadDocument(file, "sess-123", "doc-1");
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0];
+    const formData = init?.body as FormData;
+    expect(formData).toBeInstanceOf(FormData);
+    expect(formData.get("replace_document_id")).toBe("doc-1");
+    expect(formData.get("file")).toBeInstanceOf(File);
+  });
+
+  it("omits replace_document_id from FormData when replaceDocumentId is not provided", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          document_id: "doc-1",
+          status_endpoint: "/documents/doc-1/status",
+        }),
+        { status: 202 }
+      )
+    );
+
+    const file = new File(["content"], "initial.pdf", {
+      type: "application/pdf",
+    });
+    await uploadDocument(file, "sess-123");
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0];
+    const formData = init?.body as FormData;
+    expect(formData).toBeInstanceOf(FormData);
+    expect(formData.get("replace_document_id")).toBeNull();
+  });
 });
 
 describe("listDocuments", () => {

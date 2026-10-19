@@ -91,4 +91,65 @@ describe("UploadModal", () => {
       queuePosition: 1,
     });
   });
+
+  it("passes replaceDocumentId to uploadDocument when replacing a ready attachment", async () => {
+    vi.mocked(uploadDocument).mockResolvedValue({
+      documentId: "doc-456",
+      statusEndpoint: "/documents/doc-456/status",
+      queuePosition: 1,
+    });
+    const onUploadAccepted = vi.fn();
+
+    render(
+      <UploadModal
+        onClose={vi.fn()}
+        sessionId="sess-1"
+        replaceDocumentId="doc-old"
+        onUploadAccepted={onUploadAccepted}
+        attachment={{ documentId: "doc-old", status: "ready" }}
+      />
+    );
+
+    expect(screen.getByText(/Drop a file here/i)).toBeInTheDocument();
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["%PDF"], "new-guide.pdf", { type: "application/pdf" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await screen.findByText("new-guide.pdf");
+    expect(uploadDocument).toHaveBeenCalledWith(file, "sess-1", "doc-old");
+    expect(onUploadAccepted).toHaveBeenCalledWith({
+      fileName: "new-guide.pdf",
+      documentId: "doc-456",
+      statusEndpoint: "/documents/doc-456/status",
+      queuePosition: 1,
+    });
+  });
+
+  it("leaves the prior attachment untouched when a replacement upload fails", async () => {
+    vi.mocked(uploadDocument).mockRejectedValue(
+      new Error("File exceeds the maximum size limit")
+    );
+    const onUploadAccepted = vi.fn();
+
+    render(
+      <UploadModal
+        onClose={vi.fn()}
+        sessionId="sess-1"
+        replaceDocumentId="doc-old"
+        onUploadAccepted={onUploadAccepted}
+        attachment={{ documentId: "doc-old", status: "ready" }}
+      />
+    );
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["%PDF"], "too-large.pdf", { type: "application/pdf" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(
+      await screen.findByText("File exceeds the maximum size limit")
+    ).toBeInTheDocument();
+    expect(uploadDocument).toHaveBeenCalledWith(file, "sess-1", "doc-old");
+    expect(onUploadAccepted).not.toHaveBeenCalled();
+  });
 });

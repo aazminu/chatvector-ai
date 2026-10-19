@@ -599,27 +599,15 @@ export function useChat(sessionId: string | null, retrievalSettings: RetrievalSe
     void handleSend();
   };
 
-  const handleBeforeUpload = async () => {
-    if (!attachment) return;
-    const out = await deleteDocument(attachment.documentId);
-    if (out.status === "gone") {
-      removeUploadedDocument(attachment.documentId);
-      setAttachment(null);
-      setRemoveError(null);
-      return;
-    }
-    if (out.status === "conflict") {
-      throw new Error(out.message);
-    }
-    throw new Error(out.message);
-  };
-
   const handleUploadAccepted = (payload: {
     fileName: string;
     documentId: string;
     statusEndpoint: string;
     queuePosition?: number;
   }) => {
+    if (attachment) {
+      removeUploadedDocument(attachment.documentId);
+    }
     setRemoveError(null);
     setSessionNotice(null);
     saveUploadedDocument({
@@ -673,7 +661,6 @@ export function useChat(sessionId: string | null, retrievalSettings: RetrievalSe
     poll,
     handleSend,
     handleKeyDown,
-    handleBeforeUpload,
     handleUploadAccepted,
     handleRemoveAttachment,
     stopStreaming,

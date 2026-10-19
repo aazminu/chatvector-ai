@@ -644,12 +644,16 @@ async function postBatchChat(
 
 export async function uploadDocument(
   file: File,
-  sessionIdOverride?: string | null
+  sessionIdOverride?: string | null,
+  replaceDocumentId?: string | null
 ): Promise<{ documentId: string; statusEndpoint: string; queuePosition?: number }> {
   const sessionId =
     sessionIdOverride !== undefined ? sessionIdOverride : getSessionId();
   const formData = new FormData();
   formData.append("file", file);
+  if (replaceDocumentId) {
+    formData.append("replace_document_id", replaceDocumentId);
+  }
   
   const headers: Record<string, string> = { ...authHeaders() };
   if (sessionId !== null) {
