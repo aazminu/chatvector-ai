@@ -58,7 +58,7 @@ async def get_document_status(request: Request, document_id: UUID, auth: AuthCon
             detail={
                 "code": "document_not_found",
                 "message": "Document not found.",
-                "document_id": document_id,
+                "document_id": str(document_id),
             },
         )
 
@@ -125,7 +125,7 @@ async def delete_document(request: Request, document_id: UUID, auth: AuthContext
             detail={
                 "code": "document_not_found",
                 "message": "Document not found.",
-                "document_id": document_id,
+                "document_id": str(document_id),
             },
         )
     
