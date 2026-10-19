@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { RetrievalInspectorData } from "../lib/api";
 import {
   deduplicatedSources,
@@ -22,6 +23,8 @@ function InspectorRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function RetrievalInspector({ data }: Props) {
+  const [isOpen, setIsOpen] = useState(false);
+
   if (!hasInspectableRetrievalData(data)) {
     return null;
   }
@@ -36,12 +39,23 @@ export default function RetrievalInspector({ data }: Props) {
   );
 
   return (
-    <details className="mt-2 rounded-lg border border-border bg-background/40 text-xs">
-      <summary className="cursor-pointer list-none px-3 py-2 text-muted transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
+    <details
+      open={isOpen}
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
+      className="mt-2 rounded-lg border border-border bg-background/40 text-xs"
+    >
+      <summary
+        onClick={(event) => {
+          event.preventDefault();
+          setIsOpen((prev) => !prev);
+        }}
+        className="cursor-pointer list-none px-3 py-2 text-muted transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden"
+      >
         <span className="font-medium">Retrieval inspector</span>
         <span className="ml-1.5 font-normal text-muted/80">(developer)</span>
       </summary>
-      <div className="space-y-3 border-t border-border px-3 py-3">
+      {isOpen && (
+        <div className="space-y-3 border-t border-border px-3 py-3">
         {hasQuerySection && (
           <section aria-label="Query">
             <h4 className="mb-1.5 font-medium text-foreground">Query</h4>
@@ -121,7 +135,8 @@ export default function RetrievalInspector({ data }: Props) {
             </dl>
           </section>
         )}
-      </div>
+        </div>
+      )}
     </details>
   );
 }

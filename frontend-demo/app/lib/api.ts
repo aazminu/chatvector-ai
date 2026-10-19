@@ -51,8 +51,8 @@ export function authHeaders(): Record<string, string> {
 
 export type ChatSource = {
   file_name: string;
-  page_number: number | null;
-  chunk_index: number | null;
+  page_number?: number | null;
+  chunk_index?: number | null;
   score?: number | null;
   score_type?: string | null;
   vector_score?: number | null;
