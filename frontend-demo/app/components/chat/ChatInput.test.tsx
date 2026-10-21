@@ -86,4 +86,49 @@ describe("ChatInput", () => {
       screen.getByText("Document still processing — sending is disabled until it is ready.")
     ).toBeInTheDocument();
   });
+
+  it("shows the selected document name for session scope when a document is attached", () => {
+    renderChatInput({
+      scope: "session",
+      attachment: {
+        fileName: "notes.txt",
+        documentId: "doc-1",
+        statusEndpoint: "/documents/doc-1/status",
+        status: "ready",
+      },
+    });
+
+    expect(
+      screen.getByText("Session scope: searches only the selected document (notes.txt).")
+    ).toBeInTheDocument();
+  });
+
+  it("does not claim a document is searched when session scope has no attachment", () => {
+    renderChatInput({
+      scope: "session",
+      attachment: null,
+    });
+
+    expect(
+      screen.getByText("Session scope: no document selected — upload a document to search it.")
+    ).toBeInTheDocument();
+  });
+
+  it("shows ready-document tenant description when scope is tenant", () => {
+    renderChatInput({
+      scope: "tenant",
+      attachment: {
+        fileName: "notes.txt",
+        documentId: "doc-1",
+        statusEndpoint: "/documents/doc-1/status",
+        status: "ready",
+      },
+    });
+
+    expect(
+      screen.getByText(
+        "Tenant scope: searches the tenant's ready documents (can include documents other than the attached chip)."
+      )
+    ).toBeInTheDocument();
+  });
 });

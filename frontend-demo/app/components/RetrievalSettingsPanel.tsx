@@ -35,12 +35,13 @@ export default function RetrievalSettingsPanel({
             <InfoPopover label="Scope help">
               <p>
                 <strong className="font-medium text-foreground/80">Session</strong>{" "}
-                limits retrieval to documents attached to this session.
+                searches only the selected document attached to this chat.
               </p>
               <p className="mt-3">
                 <strong className="font-medium text-foreground/80">Tenant</strong>{" "}
-                searches all documents registered to the tenant (auth is not
-                enforced in demo environments).
+                searches the tenant&apos;s ready documents, which can include
+                documents other than the attached chip (auth is not enforced in
+                demo environments).
               </p>
             </InfoPopover>
           </div>
