@@ -10,7 +10,7 @@ export function deduplicatedSources(sources: ChatSource[]): ChatSource[] {
   });
 }
 
-export function formatCitationLine(source: ChatSource): string {
+export function formatSourceCitation(source: ChatSource): string {
   const parts = [source.file_name];
   if (source.page_number != null) {
     parts.push(`p.${source.page_number}`);
@@ -18,7 +18,22 @@ export function formatCitationLine(source: ChatSource): string {
   if (source.chunk_index != null) {
     parts.push(`chunk ${source.chunk_index}`);
   }
-  let line = parts.join(" · ");
+  return parts.join(" · ");
+}
+
+export function formatCitationSummary(sources?: ChatSource[]): string | null {
+  if (!sources || sources.length === 0) {
+    return null;
+  }
+  const unique = deduplicatedSources(sources);
+  if (unique.length === 0) {
+    return null;
+  }
+  return unique.map(formatSourceCitation).join(" · ");
+}
+
+export function formatCitationLine(source: ChatSource): string {
+  let line = formatSourceCitation(source);
   if (source.score != null) {
     line += ` · score ${source.score.toFixed(2)}`;
   }

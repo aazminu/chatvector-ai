@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   deduplicatedSources,
   formatCitationLine,
+  formatCitationSummary,
   formatLatencySeconds,
   formatResponseMetadata,
+  formatSourceCitation,
   hasInspectableRetrievalData,
   inspectorSourceFields,
 } from "./citations";
@@ -168,5 +170,37 @@ describe("citations helpers", () => {
         rerank_order: 1,
       })
     ).toBe("report.pdf · p.2 · chunk 3 · score 0.77");
+  });
+
+  it("formats visible source citation with file and location without score", () => {
+    expect(
+      formatSourceCitation({
+        file_name: "notes.txt",
+        chunk_index: 0,
+        score: 0.63,
+        score_type: "vector",
+      })
+    ).toBe("notes.txt · chunk 0");
+
+    expect(
+      formatSourceCitation({
+        file_name: "report.pdf",
+        page_number: 4,
+        chunk_index: 2,
+        score: 0.88,
+      })
+    ).toBe("report.pdf · p.4 · chunk 2");
+  });
+
+  it("formats deduplicated citation summary and returns null when empty", () => {
+    expect(formatCitationSummary(undefined)).toBeNull();
+    expect(formatCitationSummary([])).toBeNull();
+    expect(
+      formatCitationSummary([
+        { file_name: "notes.txt", chunk_index: 0, score: 0.63 },
+        { file_name: "notes.txt", chunk_index: 0, score: 0.63 },
+        { file_name: "report.pdf", page_number: 2, chunk_index: 1, score: 0.91 },
+      ])
+    ).toBe("notes.txt · chunk 0 · report.pdf · p.2 · chunk 1");
   });
 });

@@ -3,7 +3,10 @@ import {
   type ChatSource,
   type RetrievalDebugMetadata,
 } from "../../lib/api";
-import { formatResponseMetadata } from "../../lib/citations";
+import {
+  formatCitationSummary,
+  formatResponseMetadata,
+} from "../../lib/citations";
 import RetrievalInspector from "../RetrievalInspector";
 import { InlineAlert } from "../ui/InlineAlert";
 
@@ -26,6 +29,7 @@ export type AiResponseContentProps = {
   zeroChunksMessage?: string;
   showZeroChunks?: boolean;
   textClassName?: string;
+  citationClassName?: string;
   metadataClassName?: string;
   zeroChunksClassName?: string;
   emptyMessageClassName?: string;
@@ -46,10 +50,12 @@ export default function AiResponseContent({
   zeroChunksMessage = "No relevant content found in this document.",
   showZeroChunks = true,
   textClassName = "",
+  citationClassName = "mt-2 text-xs text-muted",
   metadataClassName = "mt-2 text-xs text-muted",
   zeroChunksClassName = "mt-1 text-sm text-muted italic",
   emptyMessageClassName = "text-sm text-muted italic",
 }: AiResponseContentProps) {
+  const citationSummary = formatCitationSummary(sources);
   const metadata = formatResponseMetadata({
     chunks,
     model,
@@ -90,6 +96,9 @@ export default function AiResponseContent({
       ) : null}
       {showZeroChunks && chunks === 0 && detailsVisible && (
         <p className={zeroChunksClassName}>{zeroChunksMessage}</p>
+      )}
+      {citationSummary && detailsVisible && (
+        <p className={citationClassName}>{citationSummary}</p>
       )}
       {metadata && detailsVisible && (
         <p className={metadataClassName}>{metadata}</p>
