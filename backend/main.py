@@ -4,6 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -311,12 +312,13 @@ async def invalid_retrieval_config_handler(
 app.add_exception_handler(InvalidRetrievalConfigError, invalid_retrieval_config_handler)
 
 
+@app.exception_handler(StarletteHTTPException)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, StarletteHTTPException):
         return JSONResponse(
             status_code=exc.status_code, 
-            content={"detail": exc.detail},
+            content=jsonable_encoder({"detail": exc.detail}),
             headers=getattr(exc, "headers", None)
         )
     
